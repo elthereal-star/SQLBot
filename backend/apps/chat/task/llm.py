@@ -36,7 +36,7 @@ from apps.chat.curd.chat import save_question, save_sql_answer, save_sql, \
     get_chat_chart_config, trigger_log_error
 from apps.chat.models.chat_model import ChatQuestion, ChatRecord, Chat, RenameChat, ChatLog, OperationEnum, \
     ChatFinishStep, AxisObj, SystemPromptMessage, HumanPromptMessage, AIPromptMessage
-from apps.chat.task.llm_response import parse_sql_answer
+from apps.chat.task.llm_response import parse_chart_answer, parse_sql_answer
 from apps.chat.task.sql_security import extract_tables_from_sql, validate_authorized_tables
 from apps.data_training.curd.data_training import get_training_template
 from apps.datasource.crud.datasource import get_table_schema, get_tables_sample_data
@@ -1160,62 +1160,7 @@ class LLMService:
         return sql
 
     def check_save_chart(self, session: Session, res: str) -> Dict[str, Any]:
-
-        json_str = extract_nested_json(res)
-        if json_str is None:
-            raise SingleMessageError(orjson.dumps({'message': 'Cannot parse chart config from answer',
-                                                   'traceback': "Cannot parse chart config from answer:\n" + res}).decode())
-        data: dict
-
-        chart: Dict[str, Any] = {}
-        message = ''
-        error = False
-
-        try:
-            data = orjson.loads(json_str)
-            if data['type'] and data['type'] != 'error':
-                # todo type check
-                chart = data
-                if chart.get('columns'):
-                    for v in chart.get('columns'):
-                        v['value'] = v.get('value').lower()
-                if chart.get('axis'):
-                    if chart.get('axis').get('x'):
-                        chart.get('axis').get('x')['value'] = chart.get('axis').get('x').get('value').lower()
-                    y_axis = chart.get('axis').get('y')
-                    if y_axis:
-                        if isinstance(y_axis, list):
-                            # 数组格式: y: [{name, value}, ...]
-                            for item in y_axis:
-                                if item.get('value'):
-                                    item['value'] = item['value'].lower()
-                        elif isinstance(y_axis, dict) and y_axis.get('value'):
-                            # 旧格式: y: {name, value}
-                            y_axis['value'] = y_axis['value'].lower()
-                    if chart.get('axis').get('series'):
-                        chart.get('axis').get('series')['value'] = chart.get('axis').get('series').get('value').lower()
-                if chart.get('axis') and chart['axis'].get('multi-quota'):
-                    multi_quota = chart['axis']['multi-quota']
-                    if multi_quota.get('value'):
-                        if isinstance(multi_quota['value'], list):
-                            # 将数组中的每个值转换为小写
-                            multi_quota['value'] = [v.lower() if v else v for v in multi_quota['value']]
-                        elif isinstance(multi_quota['value'], str):
-                            # 如果是字符串，也转换为小写
-                            multi_quota['value'] = multi_quota['value'].lower()
-            elif data['type'] == 'error':
-                message = data['reason']
-                error = True
-            else:
-                raise Exception('Chart is empty')
-        except Exception:
-            error = True
-            message = orjson.dumps({'message': 'Cannot parse chart config from answer',
-                                    'traceback': "Cannot parse chart config from answer:\n" + res}).decode()
-
-        if error:
-            raise SingleMessageError(message)
-
+        chart = parse_chart_answer(res)
         save_chart(session=session, chart=orjson.dumps(chart).decode(), record_id=self.record.id)
 
         return chart
