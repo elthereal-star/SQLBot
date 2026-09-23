@@ -13,7 +13,6 @@ from typing import Any, List, Optional, Union, Dict, Iterator
 import orjson
 import pandas as pd
 import requests
-import sqlglot
 import sqlparse
 from langchain.chat_models.base import BaseChatModel
 from langchain_community.utilities import SQLDatabase
@@ -24,7 +23,6 @@ from sqlbot_xpack.config.model import SysArgModel
 from sqlbot_xpack.custom_prompt.curd.custom_prompt import find_custom_prompts
 from sqlbot_xpack.custom_prompt.models.custom_prompt_model import CustomPromptTypeEnum
 from sqlbot_xpack.license.license_manage import SQLBotLicenseUtil
-from sqlglot import exp
 from sqlmodel import Session
 
 from apps.ai_model.model_factory import LLMConfig, LLMFactory, get_default_config
@@ -38,12 +36,13 @@ from apps.chat.curd.chat import save_question, save_sql_answer, save_sql, \
     get_chat_chart_config, trigger_log_error
 from apps.chat.models.chat_model import ChatQuestion, ChatRecord, Chat, RenameChat, ChatLog, OperationEnum, \
     ChatFinishStep, AxisObj, SystemPromptMessage, HumanPromptMessage, AIPromptMessage
+from apps.chat.task.sql_security import extract_tables_from_sql, validate_authorized_tables
 from apps.data_training.curd.data_training import get_training_template
 from apps.datasource.crud.datasource import get_table_schema, get_tables_sample_data
 from apps.datasource.crud.permission import get_row_permission_filters, is_normal_user
 from apps.datasource.embedding.ds_embedding import get_ds_embedding
 from apps.datasource.models.datasource import CoreDatasource
-from apps.db.db import exec_sql, get_version, check_connection, get_sqlglot_dialect
+from apps.db.db import exec_sql, get_version, check_connection
 from apps.system.crud.aimodel_manage import get_ai_model_list_by_workspace
 from apps.system.crud.assistant import AssistantOutDs, AssistantOutDsFactory, get_assistant_ds
 from apps.system.crud.parameter_manage import get_groups
@@ -69,27 +68,6 @@ dynamic_subsql_prefix = 'select * from sqlbot_dynamic_temp_table_'
 session_maker = scoped_session(sessionmaker(bind=engine, class_=Session))
 
 i18n = I18n()
-
-
-def extract_tables_from_sql(sql: str, ds_type: str = None) -> set:
-    """从 SQL 中提取真实表名（排除 CTE 别名）"""
-    tables = set()
-    dialect = get_sqlglot_dialect(ds_type)
-    try:
-        statements = sqlglot.parse(sql, dialect=dialect)
-        for stmt in statements:
-            if stmt:
-                # 收集 CTE 别名，排除嵌套 CTE
-                cte_names = set()
-                for cte in stmt.find_all(exp.CTE):
-                    if cte.alias:
-                        cte_names.add(cte.alias)
-                for table in stmt.find_all(exp.Table):
-                    if table.name and table.name not in cte_names:
-                        tables.add(table.name)
-    except Exception:
-        pass
-    return tables
 
 
 class LLMService:
@@ -1468,19 +1446,8 @@ class LLMService:
             sql, tables = self.check_sql(session=_session, res=full_sql_text, operate=sql_operate)
 
             # 表名安全检查：用 sqlglot 解析真实 SQL，不信任 AI 返回的 tables
-            actual_tables = extract_tables_from_sql(sql, ds_type=self.ds.type)
-            if not actual_tables:
-                raise SingleMessageError(
-                    "SQL parsing failed: unable to extract table names. "
-                    "This may indicate an unsupported SQL syntax or a security issue."
-                )
             allowed_tables = set(self.table_name_list)
-            unauthorized_tables = actual_tables - allowed_tables
-            if unauthorized_tables:
-                raise SingleMessageError(
-                    f"SQL contains unauthorized tables: {', '.join(unauthorized_tables)}. "
-                    f"Allowed tables: {', '.join(allowed_tables)}"
-                )
+            validate_authorized_tables(sql, self.ds.type, allowed_tables)
 
             if ((not self.current_assistant or is_page_embedded) and is_normal_user(
                     self.current_user)) or use_dynamic_ds:
