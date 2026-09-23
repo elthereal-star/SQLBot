@@ -36,6 +36,7 @@ from apps.chat.curd.chat import save_question, save_sql_answer, save_sql, \
     get_chat_chart_config, trigger_log_error
 from apps.chat.models.chat_model import ChatQuestion, ChatRecord, Chat, RenameChat, ChatLog, OperationEnum, \
     ChatFinishStep, AxisObj, SystemPromptMessage, HumanPromptMessage, AIPromptMessage
+from apps.chat.task.llm_response import parse_sql_answer
 from apps.chat.task.sql_security import extract_tables_from_sql, validate_authorized_tables
 from apps.data_training.curd.data_training import get_training_template
 from apps.datasource.crud.datasource import get_table_schema, get_tables_sample_data
@@ -1103,36 +1104,12 @@ class LLMService:
                                                                   token_usage=token_usage)
 
     def check_sql(self, session: Session, res: str, operate: OperationEnum) -> tuple[str, Optional[list]]:
-        json_str = extract_nested_json(res)
-
         log = self.current_logs[operate]
-
-        if json_str is None:
-            trigger_log_error(session, log)
-            raise SingleMessageError(orjson.dumps({'message': 'SQL answer is not a valid json object',
-                                                   'traceback': "SQL answer is not a valid json object:\n" + res}).decode())
-        sql: str
-        data: dict
         try:
-            data = orjson.loads(json_str)
-
-            if data['success']:
-                sql = data['sql']
-            else:
-                message = data['message']
-                raise SingleMessageError(message)
-        except SingleMessageError as e:
+            return parse_sql_answer(res)
+        except SingleMessageError:
             trigger_log_error(session, log)
-            raise e
-        except Exception:
-            trigger_log_error(session, log)
-            raise SingleMessageError(orjson.dumps({'message': 'Cannot parse sql from answer',
-                                                   'traceback': "Cannot parse sql from answer:\n" + res}).decode())
-
-        if sql.strip() == '':
-            trigger_log_error(session, log)
-            raise SingleMessageError("SQL query is empty")
-        return sql, data.get('tables')
+            raise
 
     @staticmethod
     def get_chart_type_from_sql_answer(res: str) -> Optional[str]:
